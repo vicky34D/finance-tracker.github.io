@@ -1,0 +1,483 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>My Finance Tracker</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+:root{
+  --bg:#f5f6f8;--card:#fff;--text:#1c2128;--muted:#6b7280;--line:#e5e7eb;
+  --accent:#2563eb;--good:#16a34a;--bad:#dc2626;--warn:#d97706;--input:#fff;
+}
+@media (prefers-color-scheme:dark){
+  :root{--bg:#0f1318;--card:#181e26;--text:#e6e9ee;--muted:#8b95a5;--line:#2a323d;
+  --accent:#5b9bff;--good:#3ecf72;--bad:#f06565;--warn:#f0a53c;--input:#10151b}
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--text);font:14px/1.45 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif}
+header{display:flex;flex-wrap:wrap;gap:12px;align-items:center;justify-content:space-between;padding:14px 20px;background:var(--card);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+h1{font-size:18px;margin:0}
+nav{display:flex;gap:4px;flex-wrap:wrap}
+nav button{background:none;border:0;color:var(--muted);padding:8px 12px;border-radius:8px;cursor:pointer;font-size:14px}
+nav button.on{background:var(--accent);color:#fff}
+main{max-width:1150px;margin:0 auto;padding:20px 16px 60px}
+.row{display:flex;gap:16px;flex-wrap:wrap;margin-bottom:16px}
+.card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;flex:1 1 280px;min-width:0}
+.card h3{margin:0 0 10px;font-size:14px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.kpi{flex:1 1 160px}
+.kpi .v{font-size:22px;font-weight:700;margin-top:2px}
+.kpi .s{font-size:12px;color:var(--muted)}
+.good{color:var(--good)}.bad{color:var(--bad)}.warn{color:var(--warn)}.muted{color:var(--muted)}
+form{display:flex;gap:8px;flex-wrap:wrap;align-items:end}
+label{display:flex;flex-direction:column;font-size:12px;color:var(--muted);gap:3px}
+input,select{background:var(--input);color:var(--text);border:1px solid var(--line);border-radius:8px;padding:8px 10px;font-size:14px;min-width:110px}
+button.btn{background:var(--accent);color:#fff;border:0;border-radius:8px;padding:9px 16px;cursor:pointer;font-size:14px}
+button.ghost{background:none;border:1px solid var(--line);color:var(--text);border-radius:8px;padding:6px 10px;cursor:pointer;font-size:12px}
+button.del{background:none;border:0;color:var(--bad);cursor:pointer;font-size:16px}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--line);white-space:nowrap}
+th{font-size:12px;color:var(--muted);font-weight:600}
+td.n,th.n{text-align:right}
+.tablewrap{overflow-x:auto}
+.bar{height:8px;background:var(--line);border-radius:6px;overflow:hidden;margin-top:4px}
+.bar>i{display:block;height:100%;background:var(--accent)}
+.bar.over>i{background:var(--bad)}
+.bar.mid>i{background:var(--warn)}
+.chart{position:relative;height:250px}
+.tag{font-size:11px;padding:2px 8px;border-radius:99px;background:var(--line);color:var(--muted)}
+.insight{padding:8px 0;border-bottom:1px solid var(--line)}
+.insight:last-child{border:0}
+.hide{display:none}
+.hint{font-size:12px;color:var(--muted);margin-top:8px}
+</style>
+</head>
+<body>
+<header>
+  <h1>💰 My Finance Tracker</h1>
+  <nav id="nav"></nav>
+  <div>
+    <input type="month" id="month" title="Month">
+  </div>
+</header>
+<main id="app"></main>
+
+<script>
+const KEY = 'finance_tracker_v1';
+const INCOME_CATS = ['Salary','Freelance','Business','Rental','Interest / Dividend','Bonus','Other'];
+const EXPENSE_CATS = ['Food & Dining','Groceries','Rent','Transport','Fuel','Utilities & Bills','Shopping','Health','Entertainment','Travel','Education','Insurance','EMI','Subscriptions','Gifts & Donations','Other'];
+const ASSET_TYPES = ['Stock','Mutual Fund','ETF','FD / RD','Gold','Crypto','PPF / EPF / NPS','Real Estate','Cash / Savings','Other'];
+const COLORS = ['#2563eb','#16a34a','#d97706','#dc2626','#7c3aed','#0891b2','#db2777','#65a30d','#ea580c','#475569','#0d9488','#9333ea'];
+
+function def(){ return {tx:[],emis:[],cards:[],holdings:[],budgets:{},settings:{opening:0}}; }
+function load(){
+  try{ const d = JSON.parse(localStorage.getItem(KEY)); if(d) return Object.assign(def(), d); }catch(e){}
+  return def();
+}
+let S = load();
+let tab = 'dashboard';
+let charts = {};
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2,6);
+const today = () => new Date().toISOString().slice(0,10);
+const inr = n => '₹' + (Math.round(n||0)).toLocaleString('en-IN');
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const num = v => parseFloat(v) || 0;
+const sum = a => a.reduce((x,y)=>x+y,0);
+function save(){ localStorage.setItem(KEY, JSON.stringify(S)); render(); }
+
+const monthEl = document.getElementById('month');
+monthEl.value = today().slice(0,7);
+monthEl.onchange = render;
+const curMonth = () => monthEl.value || today().slice(0,7);
+const inMonth = (t,m=curMonth()) => t.date.slice(0,7) === m;
+
+/* ---------- calculations ---------- */
+function emiOf(e){
+  if(e.emi > 0) return e.emi;
+  const r = e.rate/1200, n = e.tenure;
+  if(!r) return e.principal/n;
+  return e.principal*r*Math.pow(1+r,n)/(Math.pow(1+r,n)-1);
+}
+function emiStats(e){
+  const emi = emiOf(e);
+  const linked = S.tx.filter(t => t.emiId === e.id).length;
+  const paid = Math.min(e.tenure, (e.alreadyPaid||0) + linked);
+  const r = e.rate/1200, n = e.tenure;
+  let bal;
+  if(!r) bal = e.principal*(1 - paid/n);
+  else bal = e.principal*(Math.pow(1+r,n)-Math.pow(1+r,paid))/(Math.pow(1+r,n)-1);
+  bal = Math.max(0, bal);
+  const left = n - paid;
+  const end = new Date(); end.setMonth(end.getMonth() + left);
+  return {emi, paid, left, bal, end, totalInterest: emi*n - e.principal};
+}
+function cardStats(c){
+  const spent = sum(S.tx.filter(t=>t.type==='expense' && t.cardId===c.id).map(t=>t.amount));
+  const paid = sum(S.tx.filter(t=>t.type==='cardpay' && t.cardId===c.id).map(t=>t.amount));
+  const out = Math.max(0, (c.openingDue||0) + spent - paid);
+  let next = new Date(); next.setHours(0,0,0,0);
+  next.setDate(Math.min(c.dueDay||1, 28));
+  if(next < new Date(new Date().setHours(0,0,0,0))) next.setMonth(next.getMonth()+1);
+  return {out, util: c.limit ? out/c.limit*100 : 0, next, avail: Math.max(0, c.limit - out)};
+}
+function holdingStats(h){
+  const inv = h.qty*h.buy, cur = h.qty*h.price;
+  return {inv, cur, pl: cur-inv, pct: inv ? (cur-inv)/inv*100 : 0};
+}
+function cashBalance(){
+  let c = S.settings.opening||0;
+  for(const t of S.tx){
+    if(t.type==='income') c += t.amount;
+    else if(t.type==='expense' && !t.cardId) c -= t.amount;
+    else if(t.type==='cardpay' || t.type==='invest') c -= t.amount;
+  }
+  return c;
+}
+function monthTotals(m){
+  const tx = S.tx.filter(t=>inMonth(t,m));
+  return {
+    income: sum(tx.filter(t=>t.type==='income').map(t=>t.amount)),
+    expense: sum(tx.filter(t=>t.type==='expense').map(t=>t.amount)),
+    invest: sum(tx.filter(t=>t.type==='invest').map(t=>t.amount)),
+  };
+}
+function catBreakdown(m){
+  const o = {};
+  S.tx.filter(t=>t.type==='expense' && inMonth(t,m)).forEach(t => o[t.category] = (o[t.category]||0) + t.amount);
+  return Object.entries(o).sort((a,b)=>b[1]-a[1]);
+}
+
+/* ---------- UI helpers ---------- */
+const TABS = [['dashboard','Dashboard'],['transactions','Transactions'],['budget','Budgets'],['emis','EMIs & Loans'],['cards','Credit Cards'],['portfolio','Portfolio'],['settings','Data']];
+function drawNav(){
+  document.getElementById('nav').innerHTML = TABS.map(([k,l]) =>
+    `<button class="${k===tab?'on':''}" onclick="go('${k}')">${l}</button>`).join('');
+}
+function go(t){ tab = t; render(); window.scrollTo(0,0); }
+function opts(arr, sel){ return arr.map(x=>`<option ${x===sel?'selected':''}>${esc(x)}</option>`).join(''); }
+function chart(id, cfg){
+  if(typeof Chart === 'undefined') return;
+  if(charts[id]) charts[id].destroy();
+  const el = document.getElementById(id); if(!el) return;
+  charts[id] = new Chart(el, cfg);
+}
+const textColor = () => getComputedStyle(document.body).getPropertyValue('--muted').trim() || '#888';
+function fd(form){ return Object.fromEntries(new FormData(form).entries()); }
+
+/* ---------- views ---------- */
+function viewDashboard(){
+  const m = curMonth();
+  const t = monthTotals(m);
+  const savings = t.income - t.expense;
+  const rate = t.income ? savings/t.income*100 : 0;
+  const emiMonthly = sum(S.emis.map(e => emiStats(e).left>0 ? emiStats(e).emi : 0));
+  const loanOut = sum(S.emis.map(e => emiStats(e).bal));
+  const cardOut = sum(S.cards.map(c => cardStats(c).out));
+  const pf = sum(S.holdings.map(h => holdingStats(h).cur));
+  const pfInv = sum(S.holdings.map(h => holdingStats(h).inv));
+  const cash = cashBalance();
+  const netWorth = cash + pf - loanOut - cardOut;
+
+  const ins = [];
+  if(t.income && rate < 20) ins.push(`<span class="warn">Savings rate is ${rate.toFixed(0)}%</span> — aim for 20%+ of income.`);
+  if(t.income && rate >= 20) ins.push(`<span class="good">Savings rate ${rate.toFixed(0)}%</span> — healthy.`);
+  if(t.income && emiMonthly/t.income > 0.4) ins.push(`<span class="bad">EMIs take ${(emiMonthly/t.income*100).toFixed(0)}% of income</span> — over the 40% safe limit.`);
+  else if(t.income && emiMonthly) ins.push(`EMIs use ${(emiMonthly/t.income*100).toFixed(0)}% of this month's income.`);
+  S.cards.forEach(c => { const s = cardStats(c); if(s.util > 30) ins.push(`<span class="warn">${esc(c.name)} utilisation ${s.util.toFixed(0)}%</span> — keep under 30% for a good credit score.`); });
+  catBreakdown(m).slice(0,1).forEach(([c,v]) => ins.push(`Biggest expense: <b>${esc(c)}</b> (${inr(v)}${t.expense?`, ${(v/t.expense*100).toFixed(0)}%`:''}).`));
+  Object.entries(S.budgets).forEach(([c,lim]) => {
+    const sp = sum(S.tx.filter(x=>x.type==='expense'&&x.category===c&&inMonth(x,m)).map(x=>x.amount));
+    if(lim>0 && sp>lim) ins.push(`<span class="bad">${esc(c)} is over budget</span> by ${inr(sp-lim)}.`);
+  });
+  if(cash < 0) ins.push(`<span class="bad">Cash balance is negative</span> — check your opening balance in Data tab.`);
+  if(pf && pfInv) ins.push(`Portfolio is ${pf>=pfInv?'<span class="good">up':'<span class="bad">down'} ${((pf-pfInv)/pfInv*100).toFixed(1)}%</span> overall.`);
+  if(!ins.length) ins.push('<span class="muted">Add some transactions to see insights.</span>');
+
+  return `
+  <div class="row">
+    <div class="card kpi"><h3>Income</h3><div class="v good">${inr(t.income)}</div><div class="s">${m}</div></div>
+    <div class="card kpi"><h3>Expenses</h3><div class="v bad">${inr(t.expense)}</div><div class="s">incl. card spends</div></div>
+    <div class="card kpi"><h3>Savings</h3><div class="v ${savings>=0?'good':'bad'}">${inr(savings)}</div><div class="s">${rate.toFixed(0)}% of income</div></div>
+    <div class="card kpi"><h3>Invested</h3><div class="v">${inr(t.invest)}</div><div class="s">this month</div></div>
+  </div>
+  <div class="row">
+    <div class="card kpi"><h3>Net worth</h3><div class="v ${netWorth>=0?'good':'bad'}">${inr(netWorth)}</div><div class="s">cash + portfolio − debts</div></div>
+    <div class="card kpi"><h3>Cash / bank</h3><div class="v">${inr(cash)}</div><div class="s">computed</div></div>
+    <div class="card kpi"><h3>Portfolio</h3><div class="v">${inr(pf)}</div><div class="s">invested ${inr(pfInv)}</div></div>
+    <div class="card kpi"><h3>Monthly EMI</h3><div class="v">${inr(emiMonthly)}</div><div class="s">loans left ${inr(loanOut)}</div></div>
+    <div class="card kpi"><h3>Card dues</h3><div class="v ${cardOut?'warn':''}">${inr(cardOut)}</div><div class="s">${S.cards.length} card(s)</div></div>
+  </div>
+  <div class="row">
+    <div class="card"><h3>Spending by category</h3><div class="chart"><canvas id="c1"></canvas></div></div>
+    <div class="card"><h3>Last 6 months</h3><div class="chart"><canvas id="c2"></canvas></div></div>
+  </div>
+  <div class="row">
+    <div class="card"><h3>Insights</h3>${ins.map(i=>`<div class="insight">${i}</div>`).join('')}</div>
+    <div class="card"><h3>Upcoming dues</h3>${upcoming()}</div>
+  </div>`;
+}
+function upcoming(){
+  const items = [];
+  S.cards.forEach(c => { const s = cardStats(c); if(s.out>0) items.push([s.next, `${esc(c.name)} bill`, s.out]); });
+  S.emis.forEach(e => { const s = emiStats(e); if(s.left>0){ const d = new Date(); d.setHours(0,0,0,0); d.setDate(Math.min(e.dueDay||1,28)); if(d<new Date(new Date().setHours(0,0,0,0))) d.setMonth(d.getMonth()+1); items.push([d, `${esc(e.name)} EMI`, s.emi]); }});
+  items.sort((a,b)=>a[0]-b[0]);
+  if(!items.length) return '<span class="muted">No dues. Add EMIs or cards.</span>';
+  return items.map(([d,n,a]) => {
+    const days = Math.round((d - new Date(new Date().setHours(0,0,0,0)))/864e5);
+    return `<div class="insight"><b>${n}</b> — ${inr(a)} <span class="tag">${d.toLocaleDateString('en-IN',{day:'numeric',month:'short'})} · ${days===0?'today':days+' days'}</span></div>`;
+  }).join('');
+}
+function afterDashboard(){
+  const cb = catBreakdown(curMonth());
+  chart('c1', {type:'doughnut', data:{labels:cb.map(x=>x[0]), datasets:[{data:cb.map(x=>x[1]), backgroundColor:COLORS}]},
+    options:{maintainAspectRatio:false, plugins:{legend:{position:'right', labels:{color:textColor()}}}}});
+  const months = [];
+  const d = new Date(curMonth()+'-01');
+  for(let i=5;i>=0;i--){ const x = new Date(d.getFullYear(), d.getMonth()-i, 1); months.push(x.getFullYear()+'-'+String(x.getMonth()+1).padStart(2,'0')); }
+  const tot = months.map(monthTotals);
+  chart('c2', {type:'bar', data:{labels:months, datasets:[
+    {label:'Income', data:tot.map(x=>x.income), backgroundColor:'#16a34a'},
+    {label:'Expenses', data:tot.map(x=>x.expense), backgroundColor:'#dc2626'}]},
+    options:{maintainAspectRatio:false, scales:{x:{ticks:{color:textColor()}}, y:{ticks:{color:textColor()}}}, plugins:{legend:{labels:{color:textColor()}}}}});
+}
+
+let txFilter = 'all';
+function viewTransactions(){
+  const m = curMonth();
+  const list = S.tx.filter(t => inMonth(t,m) && (txFilter==='all' || t.type===txFilter)).sort((a,b)=>b.date.localeCompare(a.date));
+  const cardName = id => (S.cards.find(c=>c.id===id)||{}).name || '';
+  return `
+  <div class="card" style="margin-bottom:16px"><h3>Add transaction</h3>
+    <form id="txform" onsubmit="addTx(event)">
+      <label>Type<select name="type" onchange="syncTxForm(this.form)"><option value="expense">Expense</option><option value="income">Income</option><option value="cardpay">Credit card payment</option><option value="invest">Investment made</option></select></label>
+      <label>Date<input type="date" name="date" value="${today()}" required></label>
+      <label>Amount (₹)<input type="number" name="amount" min="0" step="0.01" required></label>
+      <label id="catwrap">Category<select name="category">${opts(EXPENSE_CATS)}</select></label>
+      <label id="paywrap">Paid via<select name="cardId"><option value="">Cash / UPI / Bank</option>${S.cards.map(c=>`<option value="${c.id}">${esc(c.name)}</option>`).join('')}</select></label>
+      <label>Note<input name="note" placeholder="optional"></label>
+      <button class="btn">Add</button>
+    </form>
+    <div class="hint">Income examples: salary, freelance, rent received, dividends. Card payment = paying your credit card bill (not an expense again).</div>
+  </div>
+  <div class="card"><h3>${m} transactions
+    <select style="float:right;min-width:0;padding:3px 6px" onchange="txFilter=this.value;render()">
+      ${[['all','All'],['expense','Expenses'],['income','Income'],['cardpay','Card payments'],['invest','Investments']].map(([v,l])=>`<option value="${v}" ${txFilter===v?'selected':''}>${l}</option>`).join('')}
+    </select></h3>
+    <div class="tablewrap"><table>
+      <tr><th>Date</th><th>Type</th><th>Category</th><th>Via</th><th>Note</th><th class="n">Amount</th><th></th></tr>
+      ${list.map(t=>`<tr><td>${t.date}</td><td><span class="tag">${t.type}</span></td><td>${esc(t.category||'')}</td><td>${esc(cardName(t.cardId)||(t.type==='expense'?'Cash/Bank':''))}</td><td>${esc(t.note||'')}</td>
+        <td class="n ${t.type==='income'?'good':t.type==='expense'?'bad':''}">${t.type==='income'?'+':'−'}${inr(t.amount)}</td>
+        <td><button class="del" title="Delete" onclick="delTx('${t.id}')">×</button></td></tr>`).join('') || '<tr><td colspan="7" class="muted">Nothing for this month.</td></tr>'}
+    </table></div>
+  </div>`;
+}
+function syncTxForm(f){
+  const type = f.type.value;
+  const cat = f.category;
+  if(type==='income') cat.innerHTML = opts(INCOME_CATS);
+  else if(type==='expense') cat.innerHTML = opts(EXPENSE_CATS);
+  else cat.innerHTML = `<option>${type==='cardpay'?'Card payment':'Investment'}</option>`;
+  document.getElementById('paywrap').querySelector('select').required = type==='cardpay';
+  const sel = f.cardId;
+  if(type==='income'||type==='invest'){ sel.value=''; document.getElementById('paywrap').classList.add('hide'); }
+  else document.getElementById('paywrap').classList.remove('hide');
+  const first = sel.querySelector('option[value=""]');
+  if(first) first.textContent = type==='cardpay' ? 'Select card…' : 'Cash / UPI / Bank';
+  if(type==='cardpay' && !S.cards.length) alert('Add a credit card first in the Credit Cards tab.');
+}
+function addTx(ev){
+  ev.preventDefault();
+  const d = fd(ev.target);
+  S.tx.push({id:uid(), type:d.type, date:d.date, amount:num(d.amount), category:d.category, cardId:d.type==='expense'||d.type==='cardpay' ? d.cardId : '', note:d.note});
+  save();
+}
+function delTx(id){ if(confirm('Delete this entry?')){ S.tx = S.tx.filter(t=>t.id!==id); save(); } }
+
+function viewBudget(){
+  const m = curMonth();
+  const spent = {}; S.tx.filter(t=>t.type==='expense'&&inMonth(t,m)).forEach(t=>spent[t.category]=(spent[t.category]||0)+t.amount);
+  const cats = [...new Set([...EXPENSE_CATS.filter(c=>S.budgets[c]>0), ...Object.keys(spent)])];
+  return `
+  <div class="card" style="margin-bottom:16px"><h3>Set monthly budget</h3>
+    <form onsubmit="setBudget(event)">
+      <label>Category<select name="category">${opts(EXPENSE_CATS)}</select></label>
+      <label>Monthly limit (₹)<input type="number" name="limit" min="0" required></label>
+      <button class="btn">Save</button>
+    </form>
+  </div>
+  <div class="card"><h3>Budget vs actual — ${m}</h3>
+    ${cats.map(c => { const lim = S.budgets[c]||0, sp = spent[c]||0, p = lim ? sp/lim*100 : 0;
+      return `<div style="margin-bottom:14px"><div style="display:flex;justify-content:space-between"><b>${esc(c)}</b>
+        <span>${inr(sp)} ${lim?`/ ${inr(lim)} <button class="del" onclick="delBudget('${esc(c)}')">×</button>`:'<span class="muted">(no budget)</span>'}</span></div>
+        ${lim?`<div class="bar ${p>100?'over':p>80?'mid':''}"><i style="width:${Math.min(100,p)}%"></i></div><div class="s muted">${p.toFixed(0)}% used · ${sp<=lim?inr(lim-sp)+' left':inr(sp-lim)+' over'}</div>`:''}</div>`; }).join('') || '<span class="muted">Set a budget above to start tracking.</span>'}
+  </div>`;
+}
+function setBudget(ev){ ev.preventDefault(); const d = fd(ev.target); S.budgets[d.category] = num(d.limit); save(); }
+function delBudget(c){ delete S.budgets[c]; save(); }
+
+function viewEmis(){
+  const tot = sum(S.emis.map(e=>emiStats(e).left>0?emiStats(e).emi:0));
+  return `
+  <div class="card" style="margin-bottom:16px"><h3>Add loan / EMI</h3>
+    <form onsubmit="addEmi(event)">
+      <label>Name<input name="name" placeholder="Home loan" required></label>
+      <label>Lender<input name="lender" placeholder="HDFC"></label>
+      <label>Loan amount (₹)<input type="number" name="principal" min="1" required></label>
+      <label>Interest % p.a.<input type="number" name="rate" step="0.01" min="0" required></label>
+      <label>Tenure (months)<input type="number" name="tenure" min="1" required></label>
+      <label>EMI (₹, blank = auto)<input type="number" name="emi" step="0.01" min="0"></label>
+      <label>EMI due day<input type="number" name="dueDay" min="1" max="28" value="5"></label>
+      <label>EMIs already paid<input type="number" name="alreadyPaid" min="0" value="0"></label>
+      <button class="btn">Add</button>
+    </form>
+  </div>
+  <div class="row"><div class="card kpi"><h3>Total monthly EMI</h3><div class="v">${inr(tot)}</div></div>
+  <div class="card kpi"><h3>Total outstanding</h3><div class="v">${inr(sum(S.emis.map(e=>emiStats(e).bal)))}</div></div></div>
+  ${S.emis.map(e => { const s = emiStats(e), p = s.paid/e.tenure*100; return `
+  <div class="card" style="margin-bottom:12px">
+    <div style="display:flex;justify-content:space-between;gap:8px;flex-wrap:wrap">
+      <div><b style="font-size:16px">${esc(e.name)}</b> <span class="tag">${esc(e.lender||'')} · ${e.rate}%</span></div>
+      <div><button class="ghost" onclick="payEmi('${e.id}')" ${s.left?'':'disabled'}>✔ Record this month's EMI</button>
+      <button class="del" onclick="delEmi('${e.id}')">×</button></div></div>
+    <div class="bar"><i style="width:${p}%"></i></div>
+    <div class="tablewrap"><table style="margin-top:8px"><tr>
+      <th>EMI</th><th>Paid</th><th>Left</th><th>Outstanding</th><th>Total interest</th><th>Ends ~</th></tr><tr>
+      <td>${inr(s.emi)}</td><td>${s.paid}/${e.tenure}</td><td>${s.left}</td><td>${inr(s.bal)}</td><td>${inr(s.totalInterest)}</td>
+      <td>${s.left?s.end.toLocaleDateString('en-IN',{month:'short',year:'numeric'}):'Closed'}</td></tr></table></div>
+  </div>`; }).join('') || '<div class="card muted">No loans yet.</div>'}`;
+}
+function addEmi(ev){ ev.preventDefault(); const d = fd(ev.target);
+  S.emis.push({id:uid(), name:d.name, lender:d.lender, principal:num(d.principal), rate:num(d.rate), tenure:num(d.tenure), emi:num(d.emi), dueDay:num(d.dueDay), alreadyPaid:num(d.alreadyPaid)}); save(); }
+function payEmi(id){ const e = S.emis.find(x=>x.id===id); S.tx.push({id:uid(), type:'expense', date:today(), amount:Math.round(emiOf(e)), category:'EMI', cardId:'', note:e.name, emiId:id}); save(); }
+function delEmi(id){ if(confirm('Delete this loan?')){ S.emis = S.emis.filter(e=>e.id!==id); save(); } }
+
+function viewCards(){
+  return `
+  <div class="card" style="margin-bottom:16px"><h3>Add credit card</h3>
+    <form onsubmit="addCard(event)">
+      <label>Card name<input name="name" placeholder="HDFC Regalia" required></label>
+      <label>Credit limit (₹)<input type="number" name="limit" min="1" required></label>
+      <label>Statement day<input type="number" name="billDay" min="1" max="28" value="1"></label>
+      <label>Payment due day<input type="number" name="dueDay" min="1" max="28" value="20"></label>
+      <label>Current outstanding (₹)<input type="number" name="openingDue" min="0" value="0"></label>
+      <button class="btn">Add</button>
+    </form>
+    <div class="hint">Log card spends in Transactions with "Paid via" = this card. Log bill payments as "Credit card payment".</div>
+  </div>
+  <div class="row">
+  ${S.cards.map(c => { const s = cardStats(c); return `
+    <div class="card"><div style="display:flex;justify-content:space-between"><b style="font-size:16px">${esc(c.name)}</b><button class="del" onclick="delCard('${c.id}')">×</button></div>
+      <div class="v" style="font-size:22px;font-weight:700">${inr(s.out)} <span class="muted" style="font-size:12px;font-weight:400">outstanding</span></div>
+      <div class="bar ${s.util>70?'over':s.util>30?'mid':''}"><i style="width:${Math.min(100,s.util)}%"></i></div>
+      <div class="hint">${s.util.toFixed(0)}% of ${inr(c.limit)} used · ${inr(s.avail)} available</div>
+      <div class="hint">Statement day ${c.billDay} · Due ${s.next.toLocaleDateString('en-IN',{day:'numeric',month:'short'})}</div>
+    </div>`; }).join('') || '<div class="card muted">No cards yet.</div>'}
+  </div>`;
+}
+function addCard(ev){ ev.preventDefault(); const d = fd(ev.target);
+  S.cards.push({id:uid(), name:d.name, limit:num(d.limit), billDay:num(d.billDay), dueDay:num(d.dueDay), openingDue:num(d.openingDue)}); save(); }
+function delCard(id){ if(confirm('Delete this card? Linked transactions stay.')){ S.cards = S.cards.filter(c=>c.id!==id); save(); } }
+
+function viewPortfolio(){
+  const rows = S.holdings.map(h => ({h, s: holdingStats(h)}));
+  const inv = sum(rows.map(r=>r.s.inv)), cur = sum(rows.map(r=>r.s.cur));
+  return `
+  <div class="card" style="margin-bottom:16px"><h3>Add holding</h3>
+    <form onsubmit="addHolding(event)">
+      <label>Type<select name="type">${opts(ASSET_TYPES)}</select></label>
+      <label>Name / symbol<input name="name" placeholder="RELIANCE / Nifty 50 Index Fund" required></label>
+      <label>Quantity / units<input type="number" name="qty" step="any" min="0" required></label>
+      <label>Avg buy price (₹)<input type="number" name="buy" step="any" min="0" required></label>
+      <label>Current price (₹)<input type="number" name="price" step="any" min="0" required></label>
+      <label style="flex-direction:row;align-items:center;gap:6px"><input type="checkbox" name="log" style="min-width:0"> log as investment outflow</label>
+      <button class="btn">Add</button>
+    </form>
+    <div class="hint">For FD / PPF / cash, use quantity 1 and put the amount as price. Update prices from the table whenever you like.</div>
+  </div>
+  <div class="row">
+    <div class="card kpi"><h3>Invested</h3><div class="v">${inr(inv)}</div></div>
+    <div class="card kpi"><h3>Current value</h3><div class="v">${inr(cur)}</div></div>
+    <div class="card kpi"><h3>P&amp;L</h3><div class="v ${cur>=inv?'good':'bad'}">${inr(cur-inv)}</div><div class="s">${inv?((cur-inv)/inv*100).toFixed(1):0}%</div></div>
+  </div>
+  <div class="row">
+    <div class="card" style="flex:2 1 520px"><h3>Holdings</h3><div class="tablewrap"><table>
+      <tr><th>Type</th><th>Name</th><th class="n">Qty</th><th class="n">Buy</th><th class="n">Price</th><th class="n">Invested</th><th class="n">Value</th><th class="n">P&amp;L</th><th></th></tr>
+      ${rows.map(({h,s})=>`<tr><td><span class="tag">${esc(h.type)}</span></td><td>${esc(h.name)}</td><td class="n">${h.qty}</td><td class="n">${inr(h.buy)}</td><td class="n">${inr(h.price)} <button class="ghost" onclick="updPrice('${h.id}')">✎</button></td>
+        <td class="n">${inr(s.inv)}</td><td class="n">${inr(s.cur)}</td><td class="n ${s.pl>=0?'good':'bad'}">${inr(s.pl)} (${s.pct.toFixed(1)}%)</td><td><button class="del" onclick="delHolding('${h.id}')">×</button></td></tr>`).join('') || '<tr><td colspan="9" class="muted">No holdings yet.</td></tr>'}
+    </table></div></div>
+    <div class="card"><h3>Allocation</h3><div class="chart"><canvas id="c3"></canvas></div></div>
+  </div>`;
+}
+function afterPortfolio(){
+  const by = {}; S.holdings.forEach(h => by[h.type] = (by[h.type]||0) + holdingStats(h).cur);
+  const e = Object.entries(by);
+  chart('c3', {type:'doughnut', data:{labels:e.map(x=>x[0]), datasets:[{data:e.map(x=>x[1]), backgroundColor:COLORS}]},
+    options:{maintainAspectRatio:false, plugins:{legend:{position:'bottom', labels:{color:textColor()}}}}});
+}
+function addHolding(ev){ ev.preventDefault(); const d = fd(ev.target);
+  const h = {id:uid(), type:d.type, name:d.name, qty:num(d.qty), buy:num(d.buy), price:num(d.price)};
+  S.holdings.push(h);
+  if(d.log) S.tx.push({id:uid(), type:'invest', date:today(), amount:h.qty*h.buy, category:'Investment', cardId:'', note:h.name});
+  save(); }
+function updPrice(id){ const h = S.holdings.find(x=>x.id===id); const v = prompt('New price for '+h.name, h.price); if(v!==null && v!=='' && !isNaN(v)){ h.price = num(v); save(); } }
+function delHolding(id){ if(confirm('Remove this holding?')){ S.holdings = S.holdings.filter(h=>h.id!==id); save(); } }
+
+function viewSettings(){
+  return `
+  <div class="card" style="margin-bottom:16px"><h3>Opening cash / bank balance</h3>
+    <form onsubmit="setOpening(event)"><label>Balance before your first entry (₹)<input type="number" name="v" step="0.01" value="${S.settings.opening||0}"></label><button class="btn">Save</button></form>
+  </div>
+  <div class="card"><h3>Backup &amp; restore</h3>
+    <p class="muted">All data lives only in this browser (localStorage). Export regularly.</p>
+    <button class="btn" onclick="exportJson()">Download backup (JSON)</button>
+    <button class="btn" onclick="exportXlsx()">Export all to Excel (.xlsx)</button>
+    <button class="ghost" onclick="exportCsv()">Export transactions (CSV)</button>
+    <label style="margin-top:12px">Restore from backup<input type="file" accept=".json" onchange="importJson(this)"></label>
+    <p><button class="ghost" style="color:var(--bad)" onclick="resetAll()">Erase everything</button></p>
+  </div>`;
+}
+function setOpening(ev){ ev.preventDefault(); S.settings.opening = num(fd(ev.target).v); save(); }
+function download(name, text, type){ const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([text],{type})); a.download = name; a.click(); }
+function exportJson(){ download('finance-backup-'+today()+'.json', JSON.stringify(S,null,2), 'application/json'); }
+function exportCsv(){
+  const q = v => '"'+String(v??'').replace(/"/g,'""')+'"';
+  const rows = [['date','type','category','amount','card','note'], ...S.tx.map(t=>[t.date,t.type,t.category,t.amount,(S.cards.find(c=>c.id===t.cardId)||{}).name||'',t.note])];
+  download('transactions-'+today()+'.csv', rows.map(r=>r.map(q).join(',')).join('\n'), 'text/csv');
+}
+function exportXlsx(){
+  if(typeof XLSX === 'undefined'){ alert('Excel library could not load (check internet connection).'); return; }
+  const cardName = id => (S.cards.find(c=>c.id===id)||{}).name || '';
+  const wb = XLSX.utils.book_new();
+  const add = (name, rows) => XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows.length ? rows : [{}]), name);
+  const months = [...new Set(S.tx.map(t=>t.date.slice(0,7)))].sort();
+  add('Summary', months.map(m => { const t = monthTotals(m); return {Month:m, Income:t.income, Expenses:t.expense, Savings:t.income-t.expense, Invested:t.invest}; }));
+  add('Transactions', [...S.tx].sort((a,b)=>a.date.localeCompare(b.date)).map(t => ({Date:t.date, Type:t.type, Category:t.category, Amount:t.amount, 'Paid via':cardName(t.cardId), Note:t.note})));
+  add('EMIs', S.emis.map(e => { const s = emiStats(e); return {Name:e.name, Lender:e.lender, Principal:e.principal, 'Rate %':e.rate, 'Tenure (months)':e.tenure, EMI:Math.round(s.emi), Paid:s.paid, Left:s.left, Outstanding:Math.round(s.bal), 'Total interest':Math.round(s.totalInterest)}; }));
+  add('Credit Cards', S.cards.map(c => { const s = cardStats(c); return {Card:c.name, Limit:c.limit, Outstanding:s.out, 'Utilisation %':+s.util.toFixed(1), Available:s.avail, 'Statement day':c.billDay, 'Due day':c.dueDay}; }));
+  add('Portfolio', S.holdings.map(h => { const s = holdingStats(h); return {Type:h.type, Name:h.name, Quantity:h.qty, 'Buy price':h.buy, 'Current price':h.price, Invested:s.inv, Value:s.cur, 'P&L':s.pl, 'P&L %':+s.pct.toFixed(2)}; }));
+  add('Budgets', Object.entries(S.budgets).map(([Category, Limit]) => ({Category, 'Monthly limit':Limit})));
+  XLSX.writeFile(wb, 'finance-' + today() + '.xlsx');
+}
+function importJson(inp){
+  const f = inp.files[0]; if(!f) return;
+  const r = new FileReader();
+  r.onload = () => { try{ S = Object.assign(def(), JSON.parse(r.result)); save(); alert('Restored.'); }catch(e){ alert('Invalid backup file.'); } };
+  r.readAsText(f);
+}
+function resetAll(){ if(confirm('Delete ALL data? This cannot be undone.') && confirm('Really sure?')){ S = def(); save(); } }
+
+/* ---------- render ---------- */
+function render(){
+  drawNav();
+  const app = document.getElementById('app');
+  const v = {dashboard:viewDashboard, transactions:viewTransactions, budget:viewBudget, emis:viewEmis, cards:viewCards, portfolio:viewPortfolio, settings:viewSettings}[tab];
+  app.innerHTML = v();
+  if(tab==='dashboard') afterDashboard();
+  if(tab==='portfolio') afterPortfolio();
+  if(tab==='transactions') syncTxForm(document.getElementById('txform'));
+}
+render();
+</script>
+</body>
+</html>
